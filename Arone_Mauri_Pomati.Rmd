@@ -1,0 +1,1180 @@
+---
+title: "Earthquake"
+author: "Tommaso Arone, Davide Mauri, Giovanni Pomati"
+date: "2025-04-14"
+output:
+  html_document:
+    toc: true              # Table of contents
+    toc_collapse: true
+    toc_smooth_scroll: true
+    toc_depth: 2           # Livello di profondità TOC
+    toc_float: true        # TOC flottante a lato
+    number_sections: true  # Numerazione sezioni
+    theme: flatly        # Tema grafico (es. cerulean, united, journal, ecc.)
+    highlight: tango       # Stile per la sintassi evidenziata (codice)
+    code_folding: show     # Mostra/nasconde codice (none | hide | show)
+    df_print: paged        # Stampa dataframe in modalità "paginata"
+    mathjax: default
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+La classificazione dei movimenti sismici è un problema di grande rilevanza per la sismologia e la protezione civile. Non tutti i segnali sismici registrati sono causati da terremoti: eventi come esplosioni artificiali, frane sottomarine o tsunami generano onde sismiche che possono essere erroneamente interpretate. Distinguere in modo automatico e affidabile tra un terremoto e altri tipi di eventi è fondamentale per migliorare la risposta ai disastri, ridurre i falsi allarmi e affinare i modelli di monitoraggio sismico.
+
+Questo progetto propone vari modelli di classificazione in grado di riconoscere i terremoti da altre sorgenti sismiche, sfruttando tecniche di machine learning applicate a dati sismici. L'obiettivo è migliorare l'accuratezza dell'analisi sismologica, supportare le decisioni delle autorità competenti e contribuire a una gestione più efficace delle emergenze.
+
+# Import Library 
+
+## Library:
+ 
+```{r, warning = FALSE, message = FALSE}
+library(tidyverse)
+library(heatmaply)
+library(mice)
+library(visdat)
+library(caret)
+library(gridExtra)
+library(MASS)
+library(tree)
+library(class)
+library(plotly)
+library(pROC)
+library(sf)
+library(terra)
+library(leaflet)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(UpSetR)
+library(naniar)
+```
+
+## Data Import
+
+Importiamo vari dataset scaricati da:
+
+<https://earthquake.usgs.gov/earthquakes/search/> , il sito è una
+piattaforma ufficiale del United States Geological Survey (USGS): l'ente
+scientifico del governo degli Stati Uniti responsabile del monitoraggio
+e della ricerca sui diversi movimenti sismici. Dal portale è possibile
+estrarre dati su movimenti del suolo in base al periodo selezionato.
+Scarichiamo diversi dataset per avere maggiori informazioni e allenare
+meglio i nostri classificatori.
+
+```{r}
+df1 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (1).csv")
+df2 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (2).csv")
+df3 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (3).csv")
+df4 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (4).csv")
+df5 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (5).csv")
+df6 <- read.csv("C:\\Users\\Tommaso\\OneDrive\\Desktop\\query (6).csv")
+df <- rbind(df1,df2,df3, df4, df5, df6)
+df <- unique(df)
+head(df)
+
+```
+
+Il dataset si presenta con 22 variabili e 74602 osservazioni.
+
+## Variabili
+
+-   latitude: La latitudine dell’epicentro, in gradi (valori negativi
+    indicano latitudini sud).
+
+-   longitude: La longitudine dell’epicentro, in gradi (valori negativi
+    indicano longitudini ovest).
+
+-   depth: La profondità dell’evento in chilometri.
+
+-   mag: La magnitudo stimata dell’evento, che misura l’energia
+    rilasciata.
+
+-   magType: Il tipo di magnitudo calcolata (ad es. Mw, Ml, Ms, ecc.)
+    che indica il metodo o l’algoritmo utilizzato.
+
+-   nst: Il numero di stazioni sismiche utilizzate per calcolare la
+    magnitudo o la localizzazione dell’evento.
+
+-   gap: Il "gap azimutale" in gradi, ovvero il più grande angolo tra
+    stazioni sismiche contigue, che fornisce un’indicazione sulla
+    copertura sismica attorno all’epicentro.
+
+-   dmin: La distanza orizzontale (in gradi) tra l’epicentro e la
+    stazione sismica più vicina; un valore minore tende a indicare una
+    migliore localizzazione.
+
+-   rms: Il valore "root mean square" (RMS) dei residui dei tempi di
+    arrivo, espresso in secondi; serve a valutare la bontà della
+    soluzione di localizzazione.
+
+-   net: Il codice della rete sismica (ad esempio, “us”, “ci”, “ak”,
+    ecc.) che ha fornito i dati per l’evento.
+
+-   id: Un identificatore univoco dell’evento assegnato dalla rete o dal
+    sistema USGS.
+
+-   updated: Il timestamp (in millisecondi) dell’ultima modifica o
+    aggiornamento dei dati relativi all’evento.
+
+-   place: Una descrizione testuale della località, spesso indicante la
+    città o la regione più vicina.
+
+-   type: Il tipo di evento sismico (ad es. “earthquake”, “quarry”,
+    ecc.).
+
+-   locationSource: L’origine del dato di localizzazione (la rete o il
+    centro che ha determinato la posizione).
+
+-   magSource: L’origine dei dati relativi alla magnitudo.
+
+-   horizontalError: L’errore stimato della posizione orizzontale,
+    espresso in chilometri.
+
+-   depthError: L’errore stimato sulla profondità, in chilometri.
+
+-   magError: L’errore (stima della deviazione standard) associato alla
+    magnitudo.
+
+-   magNst: Il numero di stazioni specificamente utilizzate nel calcolo
+    della magnitudo.
+
+-   status: Lo stato dell’evento, ad esempio “automatic” se segnalato
+    automaticamente o “reviewed” se successivamente verificato
+    manualmente.
+
+# Preprocessing e Analisi Esplorativa
+
+## Correlation Heatmap
+
+Possiamo notare nella correlation heatmap che le correlazioni non sono
+in media molto alte: infatti non superano mai lo 0,6.
+
+```{r}
+
+#Selezioniamo Variabili Numeriche
+
+dfnum <- df |> dplyr::select(where(is.numeric))
+
+#Una prima cor matrix senza NA
+R <- cor(na.omit(dfnum))
+heatmaply_cor(
+  R, cellnote = R, dendrogram = "none", cellnote_size = 10,
+  cellnote_textposition = "middle center",
+  main = "Correlation Heatmap:",
+  colors = colorRampPalette(c("#8C6D31", "white", "#31A354"))(200)
+)
+
+```
+
+## Features selection 
+
+Filtriamo solo le variabili numeriche significative
+per la nostra analisi.
+
+```{r}
+#Selezione variabili interessanti
+earth <- df |> dplyr::select(latitude, longitude, depth, mag, nst, gap, dmin, rms, magNst, horizontalError, depthError, magError, type)
+
+#Creiamo un DB senza NA per visualizzazioni
+earth_noNA <- na.omit(earth)
+
+```
+
+## Target feature
+
+Osserviamo come si distribuisce la variabile type.
+
+```{r}
+ggplot(data = earth |> dplyr::filter(type != "earthquake")) + 
+  geom_bar(aes(x = type), fill = "#A1D99B") + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + coord_flip()
+```
+
+Generiamo la variabile target oggetto di analisi: il nostro obiettivo è di
+svolgere un'analisi di classificazione riguardante un movimento sismico
+e capire se esso è stato causato da un terremoto oppure da un altro
+evento, come un'esplosione. Dividiamo quindi la variabile target in 2 classi:
+"earthquake" e "non-earthquake".
+
+```{r}
+earth$type <- as.factor(ifelse(earth$type == "earthquake","earthquake", "non-earthquake"))
+
+earth_noNA$type <- as.factor(ifelse(earth_noNA$type == "earthquake","earthquake", "non-earthquake"))
+print(earth |> group_by(type) |> summarize(n()))
+```
+
+Esaminiamo la distribuzione della variabile type appena creata.
+
+```{r}
+ggplot(data = earth) + geom_bar(aes(x = type, fill = type), fill = c("#A1D99B","#8C6D31"))
+```
+
+## Visual Rapresentation
+
+Utilizzando la latitudine e la longitudine rappresentiamo su
+una mappa di mercatore interattiva dove sono situati alcuni movimenti
+sismici presenti nel nostro dataset. Esaminando la localizzazione delle singole osservazioni, possiamo notare come gran parte dei dati classificati come "non-earthquake" hanno una longitudine e una latitudine molto simile (si trovano tutti a nord-ovest degli Stati Uniti), dunque escludiamo a priori le due variabili dai nostri modelli per evitare che la classificazione venga eccessivamente influenzata dalla posizione geografica (visualizziamo solo un campione dei nostri dati per facilitarne la comprensione).
+
+```{r}
+#preparazione al grafico 
+sample <- earth_noNA |> filter(type == "non-earthquake")
+sample1 <- earth_noNA |> filter(type == "earthquake")
+plot <- rbind(sample[1:500,], sample1[1:500,])
+
+get_marker_color <- function(type) {
+  color <- ifelse(type == "earthquake", "red", "green")
+  return(color)
+}
+leaflet() |>
+  addTiles() |>  
+  setView(lng = 0, lat = 0, zoom = 2)  |>
+  addMarkers(lng = plot$longitude , lat = plot$latitude,
+             popup = paste("Magnitudo: ", plot$mag),
+             icon = icons(
+             iconUrl =
+             paste0("https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-", get_marker_color(as.factor(plot$type)), ".png"),     iconWidth = 25, iconHeight = 41,
+             iconAnchorX = 12, iconAnchorY = 41,
+             popupAnchorX = 0, popupAnchorY = -41
+             )) 
+
+```
+
+## Scatterplot
+
+Rappresentiamo nel seguente scatterplot l'andamento di nst in funzione
+di mag, ovvero l'andamento del numero delle stazioni di rilevamento di
+movimenti sismici in funzione della magnitudo. Si può vedere che con
+l'aumentare di mag aumentano anche il numero di stazioni che rilevano i
+movimenti.
+
+```{r}
+ggplot(data = earth_noNA, aes(x = mag, y = nst)) + 
+  geom_point(col = "#A1D99B", size = 2, alpha = 0.5) + geom_smooth(col = "darkgreen")
+
+```
+
+## Boxplot
+
+```{r}
+
+b1 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = depthError), fill = "#31A354", alpha = 0.6) +
+  labs(title = "depthError", y = "")
+
+b2 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = horizontalError), fill = "#31A354", alpha = 0.6) +
+  labs(title = "horizontalError", y = "")
+
+b3 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = depth), fill = "#31A354", alpha = 0.6) +
+  labs(title = "Depth", y = "")
+b4 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = nst), fill = "#31A354", alpha = 0.6) +
+  labs(title = "nst", y = "")
+b5 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = gap), fill = "#31A354", alpha = 0.6) +
+  labs(title = "gap", y = "")
+b6 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = dmin), fill = "#31A354", alpha = 0.6) +
+  labs(title = "dmin", y = "")
+b7 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = rms), fill = "#31A354", alpha = 0.6) +
+  labs(title = "rms", y = "")
+b8 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = mag), fill = "#31A354", alpha = 0.6) +
+  labs(title = "Magnitude", y = "")
+
+b9 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(y = magError), fill = "#31A354", alpha = 0.6) +
+  labs(title = "magError", y = "")
+
+
+grid.arrange(b1,b2,b3,b4, ncol = 2)
+
+```
+```{r}
+grid.arrange(b5,b6,b7,b8,b9, ncol = 2)
+```
+
+Il grafico mostra i boxplot delle nostre variabili di interesse: è utile ai fini delle nostre analisi successive notare che alcune di esse hanno outlier molto evidenti.
+
+```{r}
+#Istogrammi
+b1 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = latitude, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "Latitude", y = "")
+b2 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = longitude, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "Longitude", y = "")
+b3 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = depth, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "Depth", y = "")
+b4 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = nst, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "nst", y = "")
+b5 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = gap, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "gap", y = "")
+b6 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = dmin, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "dmin", y = "")
+b7 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = rms, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "rms", y = "")
+b8 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_histogram(aes(x = mag, y = after_stat(density)), fill = "#A1D99B", alpha = 0.6, col = "#8C6D31") +
+  labs(title = "Magnitude", y = "")
+
+grid.arrange(b1,b2,b3,b4,b5,b6,b7,b8, nrow = 2)
+
+```
+
+Risulta particolarmente evidente che nessuna delle distribuzioni sembra seguire
+una andamento normale (vengono subito a mancare le ipotesi per
+applicare un modello discriminante lineare e anche per QDA).
+
+## Boxplot stratificato per classe 
+
+```{r}
+
+#Boxplot per classi
+b3 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = depth, fill  = type), alpha = 0.6) +
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "Depth", y = "") + theme(legend.position = "none") +
+  coord_cartesian(ylim = c(0, 110))
+
+b4 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = nst, fill = type),  alpha = 0.6) +
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "nst", y = "") + theme(legend.position = "none")+
+  coord_cartesian(ylim = c(0, 110))
+
+b5 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = gap, fill = type),, alpha = 0.6) +
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "gap", y = "") + theme(legend.position = "none")
+b6 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = dmin, fill  = type),  alpha = 0.6) +
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "dmin", y = "") + theme(legend.position = "none")+
+  coord_cartesian(ylim = c(0, 15))
+
+b7 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = rms, fill  = type), alpha = 0.6) +
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "rms", y = "") + theme(legend.position = "none")+
+  coord_cartesian(ylim = c(0, 3))
+
+b8 <- ggplot(data = data.frame(earth_noNA)) + 
+  geom_boxplot(aes(x = type,y = mag, fill  = type), alpha = 0.6) + 
+  scale_fill_manual(values = c("#8C6D31", "#31A354"))+
+  labs(title = "magnitude", y = "") + theme(legend.position = "none")
+
+
+grid.arrange(b3,b4,b5,b6, ncol = 2)
+```
+
+```{r}
+grid.arrange(b7,b8, ncol = 2)
+```
+
+Le classi sembrano mostrare varianze differenti in molte delle variabili di interesse.
+
+## Analisi degli Outlier
+
+Esaminiamo gli outlier più evidenti dai boxplot non condizionati:
+
+```{r}
+#Outliers più rilevanti in depthError
+
+print(earth_noNA |> filter(depthError>75))
+
+#Provengono tutti dalla stessa area geografica
+de_out<-which(earth_noNA$depthError>75)
+```
+
+```{r}
+#Outliers più rilevanti horizontalError
+
+earth_noNA |> filter(horizontalError>98) |> summarise(n())
+earth_noNA |> filter(horizontalError==99) |> count()
+
+
+```
+
+Noto che abbiamo più di 300 osservazioni con valore pari a 99 e sono in gran parte "non-earthquake". Decidiamo di non rimuoverli per non eliminare dati
+rilevanti per la classificazione.
+
+```{r}
+#Outliers più rilevanti magError
+print(earth_noNA |> filter(magError>2))
+
+me_out<-which(earth_noNA$magError>2) #49300
+
+```
+
+Decidiamo di rimuovere l'osservazine in questione, dato che la misurazione della magnitudo è molto
+incerta, migliorando di conseguenza anche il processo di normalizzazione della variabile.
+
+```{r}
+#Outliers più rilevanti rms
+
+#Rms alto corrisponde ad un errore di localizzazione maggiore
+
+earth_noNA |> filter(rms>10)
+quantile(earth_noNA$horizontalError,0.95)  #14.19
+quantile(earth_noNA$depthError,0.95)   #31.61
+
+rms_out<-which(earth_noNA$rms > 10)
+
+#54199 54577
+
+```
+
+Notiamo che gli outlier di rms straordinariamente alti corrispondono a
+valori elevati in horizontalerror e deptherror. Ciò porta quindi ad una
+bassa precisione dei dati raccolti, quindi optiamo per rimuovere tali
+osservazioni.
+
+```{r}
+#Outliers più rilevanti nst
+
+earth_noNA |> filter(nst>500)
+nst_out<-which(earth_noNA$nst > 500)
+
+```
+
+Non è rilevante ai fini dell'analisi, dunque rimuoviamo l'osservazione
+per permettere una migliore normalizzazione dei dati.
+
+```{r}
+#Outliers più rilevanti dmin
+
+earth_noNA |> filter(dmin>55)
+
+dmin_out<-which(earth_noNA$dmin > 55)
+
+```
+
+Rimuoviamo i valori dato che una grande dmin potrebbe significare una grande incertezza nelle misurazione, data la difficoltà nella recezione delle onde sismiche.
+
+```{r}
+outs<-c(dmin_out,nst_out,rms_out,me_out,de_out)
+earth<-earth[-outs,]
+```
+
+# Imputation Missing Values
+
+Nel Dataset abbiamo l'8,4% di Missing Value, possiamo notare inoltre
+come sembra esserci un pattern ripetuto nei missing value:
+
+Abbiamo molto spesso missing value nelle variabili "gap", "nst", "dmin",
+"horizonatalError", "magError" e "magNst". Queste variabili sono
+metadati che derivano dalle stime sulla qualità dell’evento sismico,
+ovvero dal modo in cui sono state calcolate la posizione e la magnitudo
+dell’evento.
+
+- gap indica il più grande "gap azimutale" tra le stazioni sismiche che hanno registrato l’evento: valori più bassi indicano una copertura più uniforme, mentre valori elevati possono segnalare una localizzazione meno precisa. 
+- nst è il numero totale di stazioni utilizzate per
+determinare la posizione dell’evento: più stazioni sono disponibili, maggiore è la precisione dell’ubicazione. 
+- dmin rappresenta la distanza minima (in gradi, dove 1° corrisponde approssimativamente a 111 km) tra l’epicentro e la stazione più vicina; è un indicatore della "vicinanza"
+dei dati usati. 
+- horizontalError fornisce una stima dell’errore
+orizzontale nella localizzazione, espresso in km, mentre magError indica l’incertezza stimata (errore standard) associata alla magnitudo dell’evento. 
+- magnst (spesso indicato anche come magNst) rappresenta il
+numero di stazioni utilizzate per calcolare la magnitudo.
+
+Il fatto che questi campi presentino valori NA (mancanti) quasi sempre
+insieme può succedere perché il calcolo di questi parametri richiede una
+copertura minima di stazioni sismiche. Se per un determinato evento non
+sono disponibili dati sufficienti generalmente anche nelle altre
+variabili saranno presenti valori mancanti (ad esempio, poche stazioni
+hanno registrato l’evento o la loro distribuzione non è omogenea).
+
+Visualizziamo come si distribuiscono gli NA
+
+```{r}
+vis_miss(earth, warn_large_data = FALSE)
+```
+
+Possiamo notare che, come detto in precedenza, abbiamo molti valori
+mancanti nella varibili gap(13%), nst(13%), dmin(20%),
+horizonatalError(18%), magError(15%) e magNst(15%)
+
+```{r}
+upset(as_shadow_upset(earth))
+```
+
+Andiamo a visualizzare i pattern degli NA, e come si distribuiscono
+nelle diversi variabili.
+
+```{r}
+md.pattern(earth, rotate.names = T)
+```
+
+Notiamo come diverse volte sono presenti dei valori mancanti in più
+variabili. Per Facilitare l'imputazione multipla degli NA eliminiamo i
+casi in cui si hanno missing value in più di 6 variabili: la percentuale
+di NA non varia molto.
+
+```{r}
+ismiss <- is.na(earth)
+ind <- rowSums(ismiss) > 6
+indx <- which(ind == T)
+earth <- earth[-indx,]
+vis_miss(earth, warn_large_data = FALSE)
+```
+
+## Dataset Preparation
+
+Dividiamo il nostro dataset in train (80%) e test (20%)
+
+```{r}
+#divisione train e test
+set.seed(1)
+test <- sample(1:nrow(earth), round(0.2*nrow(earth)))
+#Train
+earth_train <- earth[-test,]
+#Classi del Train
+class_train <- earth$type[-test]
+#Test
+earth_test <- earth[test,]
+#Classi del test
+class_test_NA <- as.factor(earth_test$type)
+earth_test <- earth_test |> dplyr::select(-type)
+
+```
+
+## Normalizzazione
+Creiamo una funzione per normalizzare le variabili in
+modo da avere stime più accurate. Calcoliamo il minimo e il massimo per
+ogni variabile nel training set e trasformiamo il test set utilizzando
+gli stessi valori.
+
+```{r}
+#Funzione per Normalizzare
+normalize_data <- function(train, test) {
+  numeric_columns <- sapply(train, is.numeric)
+  
+  train_normalized <- train
+  test_normalized <- test
+  
+  train_numeric <- train[numeric_columns]
+  test_numeric <- test[numeric_columns]
+  
+  min_vals <- apply(train_numeric, 2, min, na.rm = TRUE)
+  max_vals <- apply(train_numeric, 2, max, na.rm = TRUE)
+  
+  # Normalizza i dati di training
+  train_normalized[numeric_columns] <- sweep(train_numeric, 2, min_vals, FUN = "-")
+  train_normalized[numeric_columns] <- sweep(train_normalized[numeric_columns], 2, max_vals - min_vals, FUN = "/")
+  
+  # Normalizza i dati di test usando gli stessi parametri
+  test_normalized[numeric_columns] <- sweep(test_numeric, 2, min_vals, FUN = "-")
+  test_normalized[numeric_columns] <- sweep(test_normalized[numeric_columns], 2, max_vals - min_vals, FUN = "/")
+  
+  return(list(train = train_normalized, test = test_normalized))
+}
+
+```
+
+## Imputazione Multipla tramite Predictive Mean Matching
+
+Poichè disponiamo di sufficenti dati nel test set per valutare i nostri
+modelli procediamo con una strategia passiva per trattare gli NA, ovvero
+con una casewise delection. In altro modo eseguiamo una strategia attiva
+per il trattamento dei missing values nel trainig set. Visualizziamo la
+percentuale di valori mancanti nel training set, che rimane praticamente
+invariata da quella calcolata in precedenza.
+
+```{r}
+earth_test <- earth[test,]
+earth_test <- na.omit(earth_test)
+class_test <- as.factor(earth_test$type)
+earth_test <- earth_test |> dplyr::select(-type)
+
+vis_miss(earth_train)
+```
+
+L’imputazione con PMM è una tecnica semi-parametrica usata per imputare
+valori mancanti mantenendo la distribuzione originale dei dati. Si
+inizia stimando un modello di regressione sui dati completi. Per ogni
+osservazione con un valore mancante, si predice il valore mancante
+usando il modello. Si trovano poi le osservazioni reali (donatrici) con
+valori predetti simili e si sceglie casualmente uno dei valori osservati
+corrispondenti.
+
+```{r}
+#Imputiamo gli NA tramite pmm
+my_pred_matrix1 <- 1 - diag(nrow = dim(earth_train)[2], ncol = dim(earth_train)[2])
+
+my_pred_matrix1[,dim(earth_train)[2]] <- 0
+earth_train_mice <- mice(earth_train, method = "pmm",  seed = 1, printFlag = FALSE, predictorMatrix = my_pred_matrix1)
+
+#Controlliamo come cambiano le distribuzioni con i valori imputati
+densityplot(earth_train_mice)
+
+```
+
+Osserviamo come variano le imputazioni multiple delle diverse variabili
+nei 5 dataset creati. In generale le imputazioni sembrano tutte
+preservare la distribuzione originale dei dati osservati e inoltre le
+imputazioni nei 5 dataset sembrano molto simili tra di loro.
+
+# Regressione Logistica
+
+Regressione Logistica (pooling) : Utilizziamo glm.mids() che è una
+versione di glm() che lavora direttamente su oggetti di classe mids,
+cioè oggetti creati da mice() dopo aver imputato i dati mancanti. Il
+comando restituisce una lista di modelli glm applicati su ciascun
+dataset imputato. E poi andremo a valutare tutti i dataset con il
+comando pool.
+
+## Training
+
+```{r, warning=FALSE}
+#Modello logistico senza imputare gli NA
+model <- glm.mids(type ~ depth + mag + nst + gap + dmin + rms + magNst + horizontalError + depthError + magError , data = earth_train_mice, family = "binomial")
+
+pooled <- pool(model)
+summary(pooled)
+```
+
+Notiamo che praticamente tutti i coefficenti sono significativi, a parte
+la variabile depthError.
+
+## Valutazione modello
+
+Procediamo con la previsione e la valutazione del modello.
+
+```{r}
+#Previsione con reg. logistica
+pred <- lapply(getfit(model), predict, se.fit = T, newdata = earth_test, type = "response")
+
+single_prediction <- sapply(pred, `[[`,"fit")
+
+final_pred <- apply(single_prediction, 1, mean)
+
+final_pred_class <- as.factor(ifelse(final_pred > 0.5, 1, 0))
+
+levels(final_pred_class) <- levels(class_test)
+confusionMatrix(final_pred_class, class_test)
+
+```
+
+La previsione nel test porta a buoni risultati come si può vedere
+dall'Accuracy di 0.9736. Andando nel dettaglio della confusion matrix
+otteniamo una sensitivity di 0.9809, quindi il modello riesce a predirre
+molto bene la classe di default (earthquake), data dalla formula della
+sensitivity.
+
+$$
+\text{Sensitivity} = \frac{TP}{TP + FN}
+$$ 
+
+D'altro canto la specificity porta un valore più basso, pari a
+0.8666. Questo è dovuto probabilmente al forte sbilanciamento delle due
+classi.
+
+$$
+\text{Specificity} = \frac{TN}{TN + FP}
+$$ 
+
+Osserviamo che il Pos predicted Value è pari a 0.99057, in accordo con
+quanto ottenuto precedentemente con la sensitivity.
+
+$$
+\text{Pos predicted Value} = \frac{TP}{TP + FP}
+$$ 
+
+Osserviamo che il Neg predicted Value è pari a 0.7580, in accordo con
+quanto ottenuto precedentemente con la specificity.
+
+$$
+\text{Neg predicted Value} = \frac{TN}{TN + FN}
+$$
+
+Il modello predice molto bene la classe earthquake ma non in maniera
+ottimale la classe più sbilanciata (non-earthquake)
+
+## F1-score:
+
+Poichè le classi sono molto sbilanciate utilizziamo la metrica dell'F1-score:
+
+
+$$
+\text{F1-score} = \frac{2}{\frac{1}{P} + \frac{1}{R}}
+$$
+
+
+```{r}
+# Funzione per calcolare l'F1-score 
+f1_score <- function(conf_matrix, positive_class = NULL) {
+  
+  cm_table <- conf_matrix$table
+  
+ 
+  if (is.null(positive_class)) {
+    positive_class <- rownames(cm_table)[1]  #
+  }
+  
+  TP <- cm_table[positive_class, positive_class]
+  FP <- sum(cm_table[, positive_class]) - TP
+  FN <- sum(cm_table[positive_class, ]) - TP
+  
+  precision <- if ((TP + FP) > 0) TP / (TP + FP) else 0
+  recall    <- if ((TP + FN) > 0) TP / (TP + FN) else 0
+  
+  f1 <- if ((precision + recall) > 0) {
+    2 * precision * recall / (precision + recall)
+  } else {
+    0
+  }
+  
+  return(f1)
+}
+
+cm <- confusionMatrix(final_pred_class, class_test)
+
+f1_score(cm, positive_class = "non-earthquake")
+
+```
+
+Il valore dell'F1-score è di 0.809, questo risultato è collegato a quanto detto in precedenza: questo modello non riesce molto a predirre la classe "non-earthquake" (la classe sbilanciata).
+
+
+# KNN
+
+## Tuning del parametro k
+
+Scegliamo un dataset per andare alla ricerca del K ottimale.
+
+```{r}
+norm <- normalize_data(complete(earth_train_mice,1),earth_test)
+
+train_std <- norm$train
+test_std <- norm$test
+```
+
+Dividiamo il training set in validation e training per valutare la
+migliore accuracy per i diversi valori di k (con k da 2 a 15)
+
+```{r}
+train_std <- train_std |> dplyr::select(-c("type","latitude","longitude"))
+
+set.seed(1)
+validation <- sample(1:nrow(train_std),0.2*nrow(train_std))
+
+validation_set <- train_std[validation,]
+class_validation <- class_train[validation]
+earth_train_complete2 <- train_std[-validation,]
+class_train2 <- class_train[-validation]
+
+calc_class_err = function(actual, predicted) { mean(actual != predicted) }
+
+k <- c(2:15)
+accuracy <- vector()
+err_k = rep(x = 0, times = length(k))
+result <- matrix(NA, ncol = length(k), nrow = 2)
+
+for(i in 1:length(k)){
+  
+  pred <- as.factor(knn(earth_train_complete2,validation_set,class_train2, k = k[i]))
+  
+  accuracy[i] <- mean(pred == class_validation)
+  
+  result[1,i] <- k[i]
+  result[2,i] <- accuracy[i]
+  err_k[i] = calc_class_err(class_validation, pred)
+  
+}
+
+k[which.max(result[2,])] 
+```
+
+Otteniamo un k ottimale uguale a 5.
+
+```{r}
+plot(k,result[2,] , type = "b", col = "dodgerblue", cex = 1, pch = 20,
+     xlab = "k, number of neighbors", ylab = "Accuracy", 
+     main = "Accuracy vs Neighbors")
+
+```
+
+## Training e valutazione
+
+Utilizziamo la seguente strategia di pooling: stimiamo un modello KNN
+per ogni dataset creato dell'imputazione e teniamo come predizione
+finale la classe più predetta per ogni osservazione nei 5 modelli.
+
+```{r}
+
+predizioni <- matrix(NA, nrow = nrow(earth_test), ncol = 5)
+
+for(i in 1:5){
+  
+  std <- normalize_data(complete(earth_train_mice,i) |> dplyr::select(-c("type","latitude","longitude")), earth_test|> dplyr::select(-c("latitude","longitude")))
+  train <- std$train
+  test <- std$test
+  pred <- as.factor(knn(train, test =  test, class_train, k = 3))
+  
+  predizioni[,i] <- pred
+  
+}
+
+elemento_piu_frequente <- function(riga){
+  tabella <- table(riga)
+  moda <- names(tabella)[tabella == max(tabella)]
+  return(moda[1])  # in caso di parità, prende il primo
+}
+
+pool_prediction <- apply(predizioni, 1, elemento_piu_frequente)
+
+pool_prediction <- as.factor(pool_prediction)
+
+levels(pool_prediction) <- levels(class_test)
+
+confusionMatrix(pool_prediction,class_test)
+
+```
+
+La previsione nel test porta a buoni risultati come si può vedere
+dall'Accuracy di 0.9774. Il modello sembra migliorare leggermente
+rispetto alla regressione logistica. Andando nel dettaglio della
+confusion matrix otteniamo una sensitivity di 0.9863, quindi il modello
+riesce a predirre molto bene la classe di default (earthquake), data
+dalla formula della sensitivity.
+
+$$
+\text{Sensitivity} = \frac{TP}{TP + FN}
+$$
+
+D'altro canto la specificity porta un valore più basso, pari a 0.8427.
+Il modello peggiora leggermente da questo punto di vista rispetto alla
+regressione logistica.
+
+$$
+\text{Specificity} = \frac{TN}{TN + FP}
+$$ 
+
+Osserviamo che il Pos predicted Value è pari a 0.9866, in accordo con
+quanto ottenuto precedentemente con la sensitivity.
+
+$$
+\text{Pos predicted Value} = \frac{TP}{TP + FP}
+$$ 
+
+Osserviamo che il Neg predicted Value è pari a 0.8130, in accordo con
+quanto ottenuto precedentemente con la specificity. Il knn quindi
+migliora molto il Negative Pred Value rispetto alla regressione
+logistica.
+
+$$
+\text{Neg predicted Value} = \frac{TN}{TN + FN}
+$$
+
+## F1-score
+
+```{r}
+
+cm <- confusionMatrix(pool_prediction, class_test)
+
+f1_score(cm, positive_class = "non-earthquake")
+
+```
+In questo caso il valore dell'F1_score migliora leggermente rispetto alla regressione logistica, il modello KNN riesce a predirre meglio la  cllasse sblilanciata ma comunque non in modo ottimale.
+
+# QDA
+
+Nonostante le assunzioni della QDA non sembrano verificate dagli
+istogrammi visualizzati in precedenza andiamo a stimare lo stesso il
+modello.
+
+## Training QDA
+
+```{r}
+
+earth_qda1<-qda(type ~ depth + mag + nst + gap + dmin + rms + magNst + horizontalError + depthError + magError, data = complete(earth_train_mice,1))
+
+```
+
+## Test QDA
+
+```{r}
+pred_qda1 <- predict(earth_qda1, na.omit(earth_test))
+post_qda <- apply(pred_qda1$posterior, 1, max)
+
+confusionMatrix(pred_qda1$class , class_test)
+
+```
+
+Si può vedere subito come la QDA peggiora notevolmente rispetto agli
+altri modelli, questo poteva essere anticipato dalla verifica delle
+assunzioni della QDA.
+
+# LDA 
+## Training
+
+```{r}
+earth_lda<-lda(type ~ depth + mag + nst + gap + dmin + rms + magNst + horizontalError + depthError + magError, data = complete(earth_train_mice,1))
+```
+
+## Valutazione
+
+```{r}
+###Previsioni con dati senza NA
+earth_lda_tst_pred1 <- predict(earth_lda, earth_test)
+post_lda <- apply(earth_lda_tst_pred1$posterior, 1, max)
+confusionMatrix(earth_lda_tst_pred1$class,class_test)
+
+```
+
+Possiamo notare un accuracy alta, causata dallo sbilanciamento delle
+classi. infatti se ci focalizziamo su indici più specifici notiamo che
+la specificity è pari a 0.2612 e il negative predicted value è pari a
+0.3843. Analogamente alla QDA questi risultati erano prevedibili dalla
+verifica delle assunzioni.
+
+# Decision Tree
+
+## Training
+
+```{r}
+tree.type <- tree(type ~ depth + mag + nst + gap + dmin + rms + magNst + horizontalError + depthError + magError, earth_train)
+plot(tree.type,type = "uniform")
+text(tree.type, ,pretty = 0,cex = 0.6)
+
+```
+
+Andiamo adesso a stimare la miglior grandezza dell'albero tramite la
+funzione cv.tree().
+
+```{r}
+#CV dell'alfa
+set.seed(1)
+
+cv.type <- cv.tree(tree.type, FUN = prune.misclass)
+
+ggplot(data = data.frame(size = cv.type$size, dev = cv.type$dev)) + 
+  geom_line(aes(x = size, y = dev), col = "#31A354") + geom_point(aes(x = size, y = dev),alpha = 0.2, size = 4, col = "#31A354") +
+  geom_hline(yintercept = min(cv.type$dev), col = "#8C6D31", linetype = "dashed") 
+
+```
+
+Notiamo come le dimensioni 7 e 8 dell'albero ottengono lo stesso
+risultato che minimizzano la devianza.
+
+Andiamo quindi a ristimare l'albero con la grandezza 7 anzichè 8,
+scegliamo la dimensione minore perchè in un nodo si ottiene la stessa
+risultante, come si può vedere nel grafico precedentemente riportato.
+
+```{r}
+best_k <- 7
+
+pruned.tree <- prune.tree(tree.type, best = best_k)
+
+plot(pruned.tree,type = "uniform")
+text(pruned.tree, ,pretty = 0,cex = 0.6)
+
+tree.post <- predict(tree.type , earth_test , type = "vector")
+
+post_tree <- apply(tree.post, 1, max)
+
+```
+
+## Valutazione
+
+```{r}
+#Previsione con decision trees
+tree.pred <- predict(pruned.tree , earth_test , type = "class")
+confusionMatrix(tree.pred, class_test)
+```
+
+La previsione nel test porta a buoni risultati come si può vedere
+dall'Accuracy di 0.9849. Andando nel dettaglio della confusion matrix
+otteniamo una sensitivity di 0.9914, quindi il modello riesce a predirre
+molto bene la classe di default (earthquake), migliore degli altri
+modelli
+
+D'altro canto la specificity porta un valore più basso, pari a 0.8904,
+acnhe in questo caso i risultati ottenuti sono migliori degli altri
+modelli.
+
+Osserviamo che il Pos predicted Value è pari a 0.9924, in accordo con
+quanto ottenuto precedentemente con la sensitivity.
+
+Osserviamo che il Neg predicted Value è pari a 0.8769, anche questo
+valore è migliorato di parecchio in confronto agli altri modelli stimati
+precedentemente.
+
+## F1-score:
+
+```{r}
+
+cm <- confusionMatrix(tree.pred, class_test)
+
+f1_score(cm, positive_class = "non-earthquake")
+
+```
+
+L'albero decisionale sembra migliorare molto dal punto di vista dell'F1_score. Ottiene un valore di gran lunga superiore ai modelli di regressione logistica e knn.
+
+# Curva di ROC
+
+Valutiamo congiuntamente tutti i risultati dei modelli applicati
+attraverso la Curva di ROC. La curva ROC è un grafico che mette in
+relazione la sensibilità (True Positive Rate) con la specificità (1 −
+False Positive Rate) per diverse soglie di classificazione. Serve per
+valutare quanto bene il modello distingue tra le due classi. Più la
+curva è vicina all'angolo in alto a sinistra, migliore è il modello e
+maggiore sara l'area sotto la curva (AUC), la quale quantifica la
+qualità della classificazione.
+
+```{r}
+#Salvo le posterior del pooling del KNN
+posterior <- matrix(NA, nrow = nrow(earth_test), ncol = 5)
+
+for(i in 1:5){
+  
+  std <- normalize_data(complete(earth_train_mice,i) |> dplyr::select(-type), earth_test)
+  train <- std$train
+  test <- std$test
+  pred <- knn(train, test =  test, class_train, k = 3, prob = T)
+  
+  prob_attr <- attr(pred, "prob")
+  posterior[,i] <- prob_attr
+  
+}
+
+posterior_pool <- rowMeans(posterior)
+
+prob_Earthquake <- ifelse(pool_prediction == "earthquake", posterior_pool, 1 - posterior_pool)
+
+```
+
+Calcoliamo la curva di ROC per i vari modelli e la rispettiva area
+sottostante la curva (AUC).
+
+```{r}
+
+#per il knn
+roc_obj <- roc(response = class_test, predictor = prob_Earthquake, levels = c("earthquake","non-earthquake"))
+#per la logistica
+roc_log <- roc(response = class_test, predictor = final_pred, levels = c("earthquake","non-earthquake"))
+
+roc_albero <- roc(response = class_test, predictor = post_tree, levels = c("earthquake","non-earthquake"))
+
+roc_qda <- roc(response = class_test, predictor = post_qda, levels = c("earthquake","non-earthquake"))
+
+roc_lda <- roc(response = class_test, predictor = post_lda, levels = c("earthquake","non-earthquake"))
+
+# Estrazione dei punti per il grafico
+roc_df <- data.frame(
+  fpr = rev(1 - roc_obj$specificities),  # false positive rate = 1 - specificity
+  tpr = rev(roc_obj$sensitivities)  # true positive rate = sensitivity
+)
+
+df_log <- data.frame(
+  fpr = rev(1 - roc_log$specificities),
+  tpr = rev(roc_log$sensitivities)
+)
+
+df_albero <- data.frame(
+  fpr = rev(1 - roc_albero$specificities),
+  tpr = rev(roc_albero$sensitivities)
+)
+
+df_qda <- data.frame(
+  fpr = rev(1 - roc_qda$specificities),
+  tpr = rev(roc_qda$sensitivities)
+)
+
+df_lda <- data.frame(
+  fpr = rev(1 - roc_lda$specificities),
+  tpr = rev(roc_lda$sensitivities)
+)
+
+auc_knn <- auc(roc_obj)
+auc_log <- auc(roc_log)
+auc_albero <- auc(roc_albero)
+auc_qda <- auc(roc_qda)
+auc_lda <- auc(roc_lda)
+
+# curva interattiva con plotly
+plot_ly() %>%
+  add_trace(
+    data = roc_df,
+    x = ~fpr,
+    y = ~tpr,
+    type = 'scatter',
+    mode = 'lines',
+    name = paste0("kNN (AUC = ", round(auc_knn, 3), ")"),
+    line = list(color = 'blue'),
+    hoverinfo = "text+name"
+  ) %>%
+  add_trace(
+    data = df_log,
+    x = ~fpr,
+    y = ~tpr,
+    type = 'scatter',
+    mode = 'lines',
+    name = paste0("Logistica (AUC = ", round(auc_log, 3), ")"),
+    line = list(color = 'red'),
+    hoverinfo = "text+name"
+  ) %>%
+  add_trace(
+    data = df_albero,
+    x = ~fpr,
+    y = ~tpr,
+    type = 'scatter',
+    mode = 'lines',
+    name = paste0("Albero Decisionale (AUC = " , round(auc_albero, 3), ")"),
+    line = list(color = 'green'),
+    hoverinfo = "text+name"
+  ) %>%
+  add_trace(
+    data = df_qda,
+    x = ~fpr,
+    y = ~tpr,
+    type = 'scatter',
+    mode = 'lines',
+    name = paste0("QDA (AUC = ", round(auc_qda, 3), ")"),
+    line = list(color = 'purple'),
+    hoverinfo = "text+name"
+  ) %>% 
+  add_trace(
+    data = df_lda,
+    x = ~fpr,
+    y = ~tpr,
+    type = 'scatter',
+    mode = 'lines',
+    name = paste0("LDA (AUC = ", round(auc_lda, 3), ")"),
+    line = list(color = 'yellow'),
+    hoverinfo = "text+name"
+  ) %>%
+  layout(
+    title = "Confronto Curve di ROC",
+    xaxis = list(title = "False Positive Rate"),
+    yaxis = list(title = "True Positive Rate"),
+    legend = list(x = 0.8, y = 0.2)
+  )
+
+```
+
+Osservando il grafico e il valore dell'AUC, i modelli migliori risultano
+essere il KNN con AUC = 0.948 e la Regressione logistica con un AUC =
+0.981. L'albero decisionale presenta comunqe un AUC pari a 0.893.
+
+# Conclusione
+
+In conclusione dal punto di vista della curva di ROC il modello migliore
+sembra essere la Regressione Logistica, ma osservando la confusion
+matrix notiamo la sua scarsa capacità di identificare la classe meno
+rappresentata (non-earthquake). Il discorso è analogo per il KNN, mentre
+l'albero decisionale nonostante abbia un valore inferiore nella curva di
+ROC ottiene risultati migliori nella confusion matrix (specificity, neg
+pred value).
